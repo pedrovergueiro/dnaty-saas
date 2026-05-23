@@ -6,16 +6,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+# 1. Deps da web API (rápido, sem torch)
+COPY requirements-web.txt .
+RUN pip install --no-cache-dir -r requirements-web.txt
 
-# Torch CPU-only (~200MB vs ~2GB da versão GPU)
+# 2. Torch CPU-only (~200MB, separado para cache do Docker)
 RUN pip install --no-cache-dir \
     "torch==2.2.0+cpu" "torchvision==0.17.0+cpu" \
     --index-url https://download.pytorch.org/whl/cpu
-
-# Demais deps — exclui torch/torchvision pois já estão instalados acima
-RUN grep -Ev "^torch|^torchvision" requirements.txt \
-    | pip install --no-cache-dir -r /dev/stdin
 
 COPY . /app
 
