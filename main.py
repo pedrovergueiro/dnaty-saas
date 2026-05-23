@@ -113,6 +113,7 @@ async def health():
     return {
         "status": "ok",
         "version": app.version,
+        "build": "2026-05-22",
         "db": "connected" if engine is not None else "not configured",
     }
 
