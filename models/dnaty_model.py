@@ -98,6 +98,13 @@ def _run_training(job_id: str) -> None:
     job["started_at"] = time.time()
 
     try:
+        try:
+            import torch  # noqa: F401
+        except ImportError:
+            job["status"] = JobStatus.error
+            job["error"] = "PyTorch not installed in this environment. Training unavailable."
+            return
+
         from dnaty.evolution.evolver import DnatyEvolver
 
         train_loader, test_loader, input_size, n_classes = _load_dataset(
