@@ -2,12 +2,14 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Deps de sistema mínimas para psycopg2-binary e bcrypt
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Instala apenas as deps da web API (sem torch — build rápido)
+# Torch CPU-only — layer separado para cache (não baixa de novo se só o código mudar)
+RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+# Deps da web API
 COPY requirements-web.txt .
 RUN pip install --no-cache-dir -r requirements-web.txt
 
