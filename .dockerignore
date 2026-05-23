@@ -1,6 +1,7 @@
-__pycache__
-*.pyc
-*.pyo
+**/__pycache__
+**/*.pyc
+**/*.pyo
+data/
 .git
 .gitignore
 .env
