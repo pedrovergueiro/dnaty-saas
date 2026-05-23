@@ -32,9 +32,12 @@ logger = logging.getLogger("dnaty_saas")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("dNATY SaaS API starting up")
-    from models.database import create_tables
-    create_tables()
-    logger.info("Database tables ready")
+    from models.database import init_db, create_tables
+    if init_db():
+        create_tables()
+        logger.info("Database ready")
+    else:
+        logger.warning("Continuing without database — set DATABASE_URL to enable auth/billing")
     yield
     logger.info("dNATY SaaS API shutting down")
 
@@ -106,7 +109,12 @@ app.include_router(results.router, prefix=API_PREFIX, tags=["Results"])
 
 @app.get("/health", tags=["Health"], summary="Liveness probe")
 async def health():
-    return {"status": "ok", "version": app.version}
+    from models.database import engine
+    return {
+        "status": "ok",
+        "version": app.version,
+        "db": "connected" if engine is not None else "not configured",
+    }
 
 
 # ── Dev entry point ────────────────────────────────────────────────────────────

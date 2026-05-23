@@ -1,13 +1,19 @@
 """
 Camada de acesso a dados — PostgreSQL via SQLAlchemy.
-A interface pública é idêntica à versão anterior em JSON,
-então nenhuma rota precisa mudar.
 """
+import logging
+
+from fastapi import HTTPException
 from models.database import SessionLocal
 from models.user_model import StripeSession, User
 
+logger = logging.getLogger(__name__)
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _require_db():
+    if SessionLocal is None:
+        raise HTTPException(status_code=503, detail="Database not configured (DATABASE_URL missing)")
+
 
 def _user_dict(u: User) -> dict:
     return {
@@ -30,6 +36,7 @@ def _session_dict(s: StripeSession) -> dict:
 # ── Users ──────────────────────────────────────────────────────────────────────
 
 def get_user_by_email(email: str) -> dict | None:
+    _require_db()
     with SessionLocal() as db:
         u = db.get(User, email.lower())
         return _user_dict(u) if u else None
@@ -42,6 +49,7 @@ def create_user(
     subscription_active: bool = False,
     stripe_customer_id: str = "",
 ) -> dict:
+    _require_db()
     with SessionLocal() as db:
         u = User(
             email=email.lower(),
@@ -57,6 +65,7 @@ def create_user(
 
 
 def update_user(email: str, **fields) -> None:
+    _require_db()
     with SessionLocal() as db:
         u = db.get(User, email.lower())
         if u:
@@ -66,6 +75,7 @@ def update_user(email: str, **fields) -> None:
 
 
 def activate_subscription(email: str, stripe_customer_id: str = "") -> None:
+    _require_db()
     with SessionLocal() as db:
         u = db.get(User, email.lower())
         if u:
@@ -73,7 +83,6 @@ def activate_subscription(email: str, stripe_customer_id: str = "") -> None:
             if stripe_customer_id:
                 u.stripe_customer_id = stripe_customer_id
         else:
-            # Pagou antes de criar conta — pré-cadastro
             u = User(
                 email=email.lower(),
                 password_hash=None,
@@ -86,6 +95,7 @@ def activate_subscription(email: str, stripe_customer_id: str = "") -> None:
 
 
 def deactivate_subscription(email: str) -> None:
+    _require_db()
     with SessionLocal() as db:
         u = db.get(User, email.lower())
         if u:
@@ -94,6 +104,7 @@ def deactivate_subscription(email: str) -> None:
 
 
 def find_user_by_customer_id(stripe_customer_id: str) -> dict | None:
+    _require_db()
     with SessionLocal() as db:
         u = (
             db.query(User)
@@ -106,6 +117,7 @@ def find_user_by_customer_id(stripe_customer_id: str) -> dict | None:
 # ── Stripe checkout sessions ────────────────────────────────────────────────────
 
 def mark_session_paid(session_id: str, email: str, customer_id: str) -> None:
+    _require_db()
     with SessionLocal() as db:
         existing = db.get(StripeSession, session_id)
         if existing:
@@ -123,13 +135,14 @@ def mark_session_paid(session_id: str, email: str, customer_id: str) -> None:
 
 
 def get_session(session_id: str) -> dict | None:
+    _require_db()
     with SessionLocal() as db:
         s = db.get(StripeSession, session_id)
         return _session_dict(s) if s else None
 
 
 def consume_session(session_id: str) -> dict | None:
-    """Retorna os dados da sessão e marca como usada (uso único)."""
+    _require_db()
     with SessionLocal() as db:
         s = db.get(StripeSession, session_id)
         if s and not s.used:
