@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     frontend_url: str = "http://localhost:5173"
     landing_url: str = "http://localhost:5500"
 
+    # Worker (Colab GPU)
+    worker_api_key: str = ""
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
 

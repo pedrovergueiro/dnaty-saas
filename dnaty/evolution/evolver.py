@@ -172,6 +172,7 @@ class DnatyEvolver:
         val_loader: torch.utils.data.DataLoader,
         early_stop_patience: int = 8,
         early_stop_min_delta: float = 1e-4,
+        progress_callback=None,
     ) -> tuple[Individual, list[GenerationLog]]:
         self._init_population()
 
@@ -220,6 +221,12 @@ class DnatyEvolver:
 
             if self.verbose:
                 pbar.set_description(str(log))
+
+            if progress_callback is not None:
+                try:
+                    progress_callback(log)
+                except Exception:
+                    pass
 
             # ── Early stopping ────────────────────────────────────────────
             if best_ind.acc > best_acc_ever + early_stop_min_delta:

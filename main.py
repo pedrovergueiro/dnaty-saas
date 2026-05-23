@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from config import settings
-from routes import auth, billing, train, status as status_route, results
+from routes import auth, billing, train, status as status_route, results, worker
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 
@@ -103,6 +103,7 @@ app.include_router(billing.router, prefix=API_PREFIX, tags=["Billing"])
 app.include_router(train.router, prefix=API_PREFIX, tags=["Training"])
 app.include_router(status_route.router, prefix=API_PREFIX, tags=["Status"])
 app.include_router(results.router, prefix=API_PREFIX, tags=["Results"])
+app.include_router(worker.router, prefix=API_PREFIX, tags=["Worker"])
 
 
 # ── Health check ───────────────────────────────────────────────────────────────
