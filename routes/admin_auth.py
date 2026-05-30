@@ -96,8 +96,13 @@ async def login(
     # Record attempt
     success = email_ok and password_ok and totp_ok
     record_login_attempt(ip, email, success)
-    
+
     if not success:
+        # TEMP DIAGNOSTIC — shows which check failed (no secrets logged)
+        logger.warning(
+            "Admin login FAILED from %s: email_ok=%s password_ok=%s totp_ok=%s (pwd_len=%d totp_len=%d)",
+            ip, email_ok, bool(password_ok), totp_ok, len(password), len(totp_code),
+        )
         raise HTTPException(status_code=404, detail="Not found")
     
     # Issue JWT (8 hours)
