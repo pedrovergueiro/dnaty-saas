@@ -10,3 +10,5 @@ email-validator>=2.1.0
 sqlalchemy>=2.0.0
 psycopg2-binary>=2.9.0
 pyotp>=2.9.0
+prometheus-client>=0.20.0
+anthropic>=0.28.0
