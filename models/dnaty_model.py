@@ -11,10 +11,12 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-# Allow importing the local dnaty package from the project root
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
+# Add both parent levels so import works locally (parents[2]=dNATY/) and in
+# Docker (parents[1]=/app/ where dnaty_saas/dnaty/ is copied).
+for _offset in (1, 2):
+    _p = str(Path(__file__).resolve().parents[_offset])
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from models.schemas import (
     JobStatus,
@@ -53,23 +55,19 @@ def get_job(job_id: str) -> dict[str, Any] | None:
 
 # ── Dataset loader ─────────────────────────────────────────────────────────────
 
-def _load_dataset(name: str, device: str):
+def _load_dataset(name: str, device: str, train_subset: int | None = None):
     import torch
     from torchvision import datasets, transforms
-
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.5,), (0.5,)),
-    ])
+    from torch.utils.data import Subset
 
     dataset_map = {
-        "mnist": (datasets.MNIST, (0.5,), (0.5,)),
-        "fashion_mnist": (datasets.FashionMNIST, (0.5,), (0.5,)),
-        "cifar10": (datasets.CIFAR10, (0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        "mnist":         (datasets.MNIST, (0.1307,), (0.3081,)),
+        "fashion_mnist": (datasets.FashionMNIST, (0.2860,), (0.3530,)),
+        "cifar10":       (datasets.CIFAR10, (0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616)),
     }
 
     if name not in dataset_map:
-        raise ValueError(f"Dataset '{name}' not supported via auto-download. Use 'custom'.")
+        raise ValueError(f"Dataset '{name}' not supported. Allowed: mnist, fashion_mnist, cifar10")
 
     cls, mean, std = dataset_map[name]
     t = transforms.Compose([
@@ -78,38 +76,69 @@ def _load_dataset(name: str, device: str):
     ])
 
     train_ds = cls(root="/tmp/data", train=True, download=True, transform=t)
-    test_ds = cls(root="/tmp/data", train=False, download=True, transform=t)
+    test_ds  = cls(root="/tmp/data", train=False, download=True, transform=t)
 
-    loader_kwargs = {"batch_size": 512, "num_workers": 0, "pin_memory": device == "cuda"}
-    train_loader = torch.utils.data.DataLoader(train_ds, shuffle=True, **loader_kwargs)
-    test_loader = torch.utils.data.DataLoader(test_ds, shuffle=False, **loader_kwargs)
+    if train_subset and train_subset < len(train_ds):
+        train_ds = Subset(train_ds, list(range(train_subset)))
+
+    pin = (device == "cuda")
+    train_loader = torch.utils.data.DataLoader(train_ds, batch_size=512, shuffle=True,  num_workers=0, pin_memory=pin)
+    test_loader  = torch.utils.data.DataLoader(test_ds,  batch_size=512, shuffle=False, num_workers=0, pin_memory=pin)
 
     input_size = 784 if name in ("mnist", "fashion_mnist") else 3072
-    n_classes = 10
-    return train_loader, test_loader, input_size, n_classes
+    return train_loader, test_loader, input_size, 10
 
 
 # ── Training runner (runs in a thread, not the event loop) ────────────────────
 
 def _run_training(job_id: str) -> None:
+    from models.training_store import update_training
+
     job = _jobs[job_id]
     params = job["params"]
     job["status"] = JobStatus.running
     job["started_at"] = time.time()
+    update_training(job_id, status="running")
 
     try:
         try:
             import torch  # noqa: F401
         except ImportError:
-            job["status"] = JobStatus.error
+            job["status"] = JobStatus.failed
             job["error"] = "PyTorch not installed in this environment. Training unavailable."
+            update_training(job_id, status="failed", error_message=job["error"])
             return
 
         from dnaty.evolution.evolver import DnatyEvolver
 
+        # Use train_subset to cap samples per plan
+        train_subset = params.get("_samples")
         train_loader, test_loader, input_size, n_classes = _load_dataset(
-            params["dataset"], params["device"]
+            params["dataset"], params["device"], train_subset=train_subset
         )
+
+        total_gens = params["n_generations"]
+
+        def _on_progress(log) -> None:
+            """Called per generation — updates in-memory job AND DB record."""
+            pct = int((log.gen / total_gens) * 100)
+            job["current_generation"] = log.gen
+            job["best_acc"] = float(log.best_acc)
+            job["progress"] = log.gen / total_gens
+            job["history"].append(GenerationInfo(
+                generation=log.gen,
+                best_acc=float(log.best_acc),
+                delta_grad=float(log.delta_grad),
+                delta_mem=float(log.delta_mem),
+                n_params=int(log.n_params),
+            ))
+            update_training(
+                job_id,
+                status="running",
+                progress=pct,
+                current_epoch=log.gen,
+                accuracy=float(log.best_acc),
+            )
 
         evolver = DnatyEvolver(
             n_pop=params["n_pop"],
@@ -127,21 +156,9 @@ def _run_training(job_id: str) -> None:
         )
 
         # run() returns (best_individual, list[GenerationLog])
-        best, raw_history = evolver.run(train_loader, test_loader)
+        # history is built incrementally by _on_progress callback
+        best, raw_history = evolver.run(train_loader, test_loader, progress_callback=_on_progress)
 
-        progress_history: list[GenerationInfo] = []
-        for log in raw_history:
-            info = GenerationInfo(
-                generation=log.gen,
-                best_acc=float(log.best_acc),
-                delta_grad=float(log.delta_grad),
-                delta_mem=float(log.delta_mem),
-                n_params=int(log.n_params),
-            )
-            progress_history.append(info)
-            logger.info("job=%s gen=%d acc=%.4f", job_id, log.gen, log.best_acc)
-
-        job["history"] = progress_history
         job["current_generation"] = len(raw_history)
         job["best_acc"] = float(best.acc)
         job["progress"] = 1.0
@@ -156,11 +173,12 @@ def _run_training(job_id: str) -> None:
                 n_params=sum(p.numel() for p in model.parameters()),
             )
 
+        duration = time.time() - job["started_at"]
         job["result"] = {
             "best_accuracy": float(best.acc),
             "final_architecture": arch_info,
-            "history": progress_history,
-            "duration_seconds": time.time() - job["started_at"],
+            "history": job["history"],
+            "duration_seconds": duration,
             "dataset": params["dataset"],
             "metadata": {
                 "n_pop": params["n_pop"],
@@ -171,14 +189,23 @@ def _run_training(job_id: str) -> None:
         job["status"] = JobStatus.completed
         job["progress"] = 1.0
 
+        update_training(
+            job_id,
+            status="complete",
+            progress=100,
+            accuracy=float(best.acc),
+            duration_seconds=duration,
+            completed_at=__import__("datetime").datetime.utcnow(),
+        )
+
     except Exception as exc:
         logger.exception("Training failed for job %s", job_id)
         job["status"] = JobStatus.failed
         job["error"] = str(exc)
+        update_training(job_id, status="failed", error_message=str(exc))
     finally:
         job["finished_at"] = time.time()
 
 
 async def start_training(job_id: str) -> None:
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _run_training, job_id)
+    await asyncio.to_thread(_run_training, job_id)

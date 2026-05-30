@@ -318,7 +318,7 @@ def main():
     resnet_s = summary_stats(resnet_accs)
     t_stat, p_val, cohen_d = paired_ttest(dnaty_accs, resnet_accs)
 
-    print(f"\n{'─'*50}")
+    print(f"\n{'-'*50}")
     print("RESULTADOS FINAIS — CIFAR-10 v5")
     print(f"  dNaty CNN: {dnaty_s['mean']*100:.2f}% ± {dnaty_s['std']*100:.2f}%")
     print(f"  ResNet-8:  {resnet_s['mean']*100:.2f}% ± {resnet_s['std']*100:.2f}%")

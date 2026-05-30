@@ -12,10 +12,10 @@ class DatasetName(str, Enum):
 
 
 class JobStatus(str, Enum):
-    queued = "queued"
-    running = "running"
-    completed = "completed"
-    failed = "failed"
+    queued    = "queued"
+    running   = "running"
+    completed = "complete"   # DB and frontend both use "complete"
+    failed    = "failed"
 
 
 # ── Train ──────────────────────────────────────────────────────────────────────

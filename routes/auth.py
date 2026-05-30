@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 
 import bcrypt
 import stripe
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from pydantic import BaseModel, EmailStr
@@ -24,6 +24,13 @@ _bearer = HTTPBearer(auto_error=False)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _get_client_ip(request: Request) -> str | None:
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else None
+
 
 def _hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
@@ -75,9 +82,23 @@ class LoginRequest(BaseModel):
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
 @router.post("/auth/signup", status_code=201)
-async def signup(req: SignupRequest):
+async def signup(
+    req: SignupRequest,
+    request: Request,
+    x_device_fp: str | None = Header(None, alias="X-Device-FP"),
+):
     if len(req.password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+
+    # ── Anti-abuse check ───────────────────────────────────────────────────────
+    from models.abuse_store import check_signup_abuse, register_fingerprint
+    client_ip = _get_client_ip(request)
+    if not check_signup_abuse(x_device_fp, client_ip):
+        # Ban silencioso — never reveal the real reason
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error. Please try again later.",
+        )
 
     existing = get_user_by_email(req.email)
 
@@ -113,6 +134,21 @@ async def signup(req: SignupRequest):
         user = create_user(req.email, pw_hash, req.name, subscription_active, stripe_customer_id)
 
     token = _create_token(req.email, user["subscription_active"])
+
+    # Auto-create API key on signup (full key returned only once)
+    from models.api_key_store import create_api_key, get_key_by_email
+    api_key_full = None
+    if not get_key_by_email(req.email):
+        plan = "pro" if user["subscription_active"] else "free"
+        try:
+            api_key_full, _ = create_api_key(req.email, plan)
+        except Exception:
+            logger.warning("Failed to create API key for %s — user can regenerate later", req.email)
+
+    # ── Register fingerprint after successful account creation ─────────────────
+    if x_device_fp:
+        register_fingerprint(x_device_fp, req.email, client_ip)
+
     logger.info("Signup: %s (subscribed=%s)", req.email, user["subscription_active"])
     return {
         "token": token,
@@ -120,16 +156,29 @@ async def signup(req: SignupRequest):
             "email": user["email"],
             "name": user.get("name", ""),
             "subscription_active": user["subscription_active"],
+            "plan": user.get("plan", "pro" if user["subscription_active"] else "free"),
         },
+        "api_key": api_key_full,
+        "api_key_note": "Save this key — it will not be shown again." if api_key_full else None,
     }
 
 
 @router.post("/auth/login")
-async def login(req: LoginRequest):
+async def login(
+    req: LoginRequest,
+    request: Request,
+    x_device_fp: str | None = Header(None, alias="X-Device-FP"),
+):
     user = get_user_by_email(req.email)
     if not user or not user.get("password_hash"):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     if not _verify_password(req.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    # Ban check runs AFTER password verification to avoid timing oracle
+    from models.abuse_store import check_login_abuse
+    client_ip = _get_client_ip(request)
+    if not check_login_abuse(x_device_fp, client_ip):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     token = _create_token(req.email, user["subscription_active"])
@@ -140,6 +189,7 @@ async def login(req: LoginRequest):
             "email": user["email"],
             "name": user.get("name", ""),
             "subscription_active": user["subscription_active"],
+            "plan": user.get("plan", "pro" if user["subscription_active"] else "free"),
         },
     }
 
@@ -155,7 +205,6 @@ async def verify_stripe_session(session_id: str):
 
 @router.get("/auth/me")
 async def me(current_user: dict = Depends(get_current_user)):
-    """Return the authenticated user's info from the JWT."""
     user = get_user_by_email(current_user["sub"])
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -163,6 +212,33 @@ async def me(current_user: dict = Depends(get_current_user)):
         "email": user["email"],
         "name": user.get("name", ""),
         "subscription_active": user["subscription_active"],
+        "plan": user.get("plan", "free"),
+    }
+
+
+@router.get("/user/plan")
+async def get_user_plan(current_user: dict = Depends(get_current_user)):
+    """Return current plan, limits, and today's usage."""
+    from models.training_store import count_trainings_today
+    from routes.train import PLAN_LIMITS
+
+    user = get_user_by_email(current_user["sub"])
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    plan = user.get("plan", "free")
+    limits = PLAN_LIMITS.get(plan, PLAN_LIMITS["free"])
+    trainings_today = count_trainings_today(user["email"])
+    tpd = limits["trainings_per_day"]
+
+    return {
+        "plan": plan,
+        "limits": limits,
+        "usage_today": {
+            "trainings": trainings_today,
+            "limit": tpd,
+            "can_train": tpd is None or trainings_today < tpd,
+        },
     }
 
 
